@@ -62,7 +62,7 @@ st.markdown("""
 # Display header with logo
 col1, col2, col3 = st.columns([1, 2, 1])
 with col2:
-    st.image("codeforher_frontend/static/images/logo.jpeg", width=200)
+    st.image("./static/images/logo.jpeg", width=200)
     st.title("Women Commute Safety 🚦")
     st.markdown("### Welcome! Please login or signup to continue")
 
