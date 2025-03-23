@@ -14,9 +14,10 @@ BASE_URL = "http://localhost:8080/api"
 
 # Page config
 st.set_page_config(
-    page_title="Active Trip - Women Commute Safety",
+    page_title="Active Trip",
+    page_icon="⏳",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded",
 )
 
 # Custom CSS
@@ -102,8 +103,9 @@ if not st.session_state.get("is_trip_started", False):
     switch_page("Trip_Planner")
     st.stop()
 
-# Function to fetch user details including emergency contacts
+@st.cache_data(ttl=300)  # Cache for 5 minutes
 def fetch_user_details():
+    """Cache user details API calls"""
     try:
         response = requests.get(
             f"{BASE_URL}/users/get-users",
@@ -133,32 +135,20 @@ def send_emergency_message(contact_id, message):
         st.error(f"Error sending message: {e}")
         return False
 
-# Add the get_current_location function
+@st.cache_data(ttl=300)  # Cache for 5 minutes
 def get_current_location() -> dict:
-    """
-    Get current location based on IP address.
-
-    Useful for when you need to determine the user's current location.
-    This tool retrieves geolocation data based on the IP address.
-
-    Returns:
-        dict: A dictionary containing location information including address,
-              latitude, longitude, city, country, etc.
-    """
+    """Cache current location API calls"""
     load_dotenv()
     try:
-        # Make request to IP geolocation API
         response = requests.get("https://ipinfo.io/json")
         if response.status_code != 200:
             raise ValueError(f"Failed to get location data: {response.status_code}")
 
         ip_data = response.json()
 
-        # Extract location coordinates from the response (format: "latitude,longitude")
         if "loc" in ip_data:
             lat, lon = ip_data["loc"].split(",")
 
-            # Format response
             location_data = {
                 "ip": ip_data.get("ip", ""),
                 "city": ip_data.get("city", ""),
@@ -176,10 +166,10 @@ def get_current_location() -> dict:
     except Exception as e:
         raise ValueError(f"Error getting current location: {str(e)}")
 
-# Update the broadcast_sos function
+@st.cache_data(ttl=300)  # Cache for 5 minutes
 def broadcast_sos(message):
+    """Cache SOS broadcast API calls"""
     try:
-        # Get current location using IP geolocation
         try:
             location_data = get_current_location()
             current_location = {
@@ -189,7 +179,6 @@ def broadcast_sos(message):
             }
         except Exception as loc_error:
             st.error(f"Error getting current location: {loc_error}")
-            # Fallback to trip details or route data
             current_location = None
             location_address = ""
             if "trip_details" in st.session_state and "current_location" in st.session_state.trip_details:
@@ -210,7 +199,6 @@ def broadcast_sos(message):
             st.error("Could not determine current location")
             return False
 
-        # Prepare SOS message payload
         sos_payload = {
             "user_id": st.session_state.token["user_id"],
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -218,7 +206,6 @@ def broadcast_sos(message):
             "message": message
         }
         
-        # Send SOS alert
         response = requests.post(
             f"{BASE_URL}/sos/send-alert",
             json=sos_payload,
@@ -229,6 +216,64 @@ def broadcast_sos(message):
     except Exception as e:
         st.error(f"Error broadcasting SOS: {e}")
         return False
+
+@st.cache_data(ttl=300)  # Cache for 5 minutes
+def update_active_trip_map():
+    """Update the map with current location and route"""
+    try:
+        # Get current location
+        location_data = get_current_location()
+        if not location_data:
+            return None
+
+        # Create map centered on current location
+        m = folium.Map(
+            location=[float(location_data["latitude"]), float(location_data["longitude"])],
+            zoom_start=13
+        )
+
+        # Add current location marker
+        folium.Marker(
+            [float(location_data["latitude"]), float(location_data["longitude"])],
+            popup="Current Location",
+            icon=folium.Icon(color='blue', icon='info-sign')
+        ).add_to(m)
+
+        # Add start and end markers if trip details exist
+        if "trip_details" in st.session_state:
+            details = st.session_state.trip_details
+            
+            # Add start marker
+            folium.Marker(
+                [float(details["origin"]["latitude"]), float(details["origin"]["longitude"])],
+                popup="Start",
+                icon=folium.Icon(color='green', icon='info-sign')
+            ).add_to(m)
+            
+            # Add end marker
+            folium.Marker(
+                [float(details["destination"]["latitude"]), float(details["destination"]["longitude"])],
+                popup="End",
+                icon=folium.Icon(color='red', icon='info-sign')
+            ).add_to(m)
+            
+            # Add route line if available
+            if "route" in details:
+                try:
+                    route_coordinates = polyline.decode(details["route"])
+                    folium.PolyLine(
+                        route_coordinates,
+                        weight=3,
+                        color='blue',
+                        opacity=0.8
+                    ).add_to(m)
+                except Exception as e:
+                    st.error(f"Error rendering route: {e}")
+
+        return m
+    except Exception as e:
+        st.error(f"Error updating map: {e}")
+        return None
 
 # Header with Trip Status
 st.title("⏳ Active Trip")
@@ -241,8 +286,13 @@ with col1:
     # Map Section
     st.markdown('<div class="trip-header">📍 Live Location</div>', unsafe_allow_html=True)
     st.markdown('<div class="map-container">', unsafe_allow_html=True)
-    if "route_map" in st.session_state:
-        folium_static(st.session_state.route_map, width=None, height=400)
+    
+    # Update and display map
+    if "trip_details" in st.session_state:
+        updated_map = update_active_trip_map()
+        if updated_map:
+            st.session_state.route_map = updated_map
+            folium_static(st.session_state.route_map, width=None, height=400)
     st.markdown('</div>', unsafe_allow_html=True)
     
     # Trip Details

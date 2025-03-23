@@ -1,7 +1,7 @@
 import streamlit as st
 import requests
 import folium
-from streamlit_folium import folium_static
+from streamlit_folium import st_folium
 from streamlit_extras.switch_page_button import switch_page
 import time
 import polyline
@@ -16,9 +16,10 @@ BASE_URL = "http://localhost:8080/api"
 
 # Page config
 st.set_page_config(
-    page_title="Trip Planner - Women Commute Safety",
+    page_title="Trip Planner",
+    page_icon="🚗",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
 # Custom CSS for better styling
@@ -137,6 +138,13 @@ if "is_trip_started" not in st.session_state:
 if "route_steps" not in st.session_state:
     st.session_state.route_steps = None
 
+# Verify token structure
+if not isinstance(st.session_state.token, dict) or "user_id" not in st.session_state.token:
+    st.error("Invalid authentication. Please login again.")
+    st.session_state.clear()
+    switch_page("Login")
+    st.stop()
+
 # Header
 st.title("🚗 Trip Planner")
 st.markdown("Plan your safe commute journey")
@@ -150,11 +158,21 @@ with col1:
 with col2:
     destination = st.text_input("End Location", placeholder="Enter destination", key="destination")
 
+@st.cache_data(ttl=3600)  # Cache for 1 hour
+def get_coordinates(address):
+    """Cache the geocoding API calls"""
+    response = requests.post(f"{BASE_URL}/maps/get-latitude-longitude", json={"address": address})
+    if response.status_code == 200:
+        return response.json()
+    return None
+
 async def fetch_route_data(session, url, payload):
+    """Async function to fetch route data"""
     async with session.post(url, json=payload) as response:
         return await response.json()
 
 async def fetch_all_route_data(source_coords, dest_coords):
+    """Async function to fetch all route data"""
     async with aiohttp.ClientSession() as session:
         payload = {
             "origin": {
@@ -169,33 +187,27 @@ async def fetch_all_route_data(source_coords, dest_coords):
             }
         }
         
-        # Create tasks for both API calls
         tasks = [
             fetch_route_data(session, f"{BASE_URL}/maps/get-time-distance", payload),
             fetch_route_data(session, f"{BASE_URL}/maps/get-route", payload)
         ]
         
-        # Run both tasks concurrently
         results = await asyncio.gather(*tasks)
         return results
 
-# Function to fetch route details
+@st.cache_data(ttl=3600)  # Cache for 1 hour
 def fetch_route_details():
+    """Cache the complete route details"""
     if source and destination:
         try:
-            # Get coordinates for both locations
-            source_response = requests.post(f"{BASE_URL}/maps/get-latitude-longitude", json={"address": source})
-            dest_response = requests.post(f"{BASE_URL}/maps/get-latitude-longitude", json={"address": destination})
+            source_coords = get_coordinates(source)
+            dest_coords = get_coordinates(destination)
             
-            if source_response.status_code == 200 and dest_response.status_code == 200:
-                source_coords = source_response.json()
-                dest_coords = dest_response.json()
-                
-                # Run async API calls
+            if source_coords and dest_coords:
+                # Run async function and get results
                 route_data, route_steps = asyncio.run(fetch_all_route_data(source_coords, dest_coords))
                 
                 if route_data and route_steps:
-                    # Add origin and destination to route data
                     route_data["origin"] = source_coords
                     route_data["destination"] = dest_coords
                     return route_data, route_steps
@@ -203,15 +215,14 @@ def fetch_route_details():
             st.error(f"Error fetching route details: {e}")
     return None, None
 
-# Function to create map
+@st.cache_data(ttl=3600)  # Cache for 1 hour
 def create_map(route_data):
-    # Create a map centered on the origin
+    """Cache the map creation"""
     m = folium.Map(
         location=[route_data["origin"]["latitude"], route_data["origin"]["longitude"]],
         zoom_start=13
     )
     
-    # Add markers for start and end points
     folium.Marker(
         [route_data["origin"]["latitude"], route_data["origin"]["longitude"]],
         popup="Start",
@@ -224,7 +235,6 @@ def create_map(route_data):
         icon=folium.Icon(color='red', icon='info-sign')
     ).add_to(m)
     
-    # Decode polyline and add route line
     try:
         route_coordinates = polyline.decode(route_data["route"])
         folium.PolyLine(
@@ -237,6 +247,35 @@ def create_map(route_data):
         st.error(f"Error rendering route: {e}")
     
     return m
+
+@st.cache_data(ttl=3600)  # Cache for 1 hour
+def get_route_safety_insights(steps):
+    """Cache the safety insights API calls"""
+    try:
+        # Format steps according to RouteStep model
+        formatted_steps = [
+            RouteStep(
+                instructions=step['instructions'],
+                distance=step['readable_distance'],
+                duration=step['readable_duration']
+            ).model_dump()
+            for step in steps
+        ]
+        
+        # Create request payload using RouteSafetyRequest model
+        request_payload = RouteSafetyRequest(route_steps=formatted_steps).model_dump()
+        
+        response = requests.post(
+            f"{BASE_URL}/llm/route-safety",
+            json=request_payload,
+            headers={"Authorization": f"Bearer {st.session_state.token['access_token']}"}
+        )
+        if response.status_code == 200:
+            return response.json()
+        return None
+    except Exception as e:
+        st.error(f"Error getting safety insights: {e}")
+        return None
 
 # Function to display route steps
 def display_route_steps(route_steps):
@@ -266,27 +305,6 @@ class RouteStep(BaseModel):
 
 class RouteSafetyRequest(BaseModel):
     route_steps: List[RouteStep]
-
-# Add this function to fetch safety insights
-def get_route_safety_insights(steps):
-    route_steps = []
-    for step in steps:
-        route_steps.append(RouteStep(
-            instructions=step['instructions'],
-            distance=step['readable_distance'],
-            duration=step['readable_duration']
-        ))
-    
-    try:
-        response = requests.post(
-            f"{BASE_URL}/llm/route-safety",
-            json={"route_steps": [step.dict() for step in route_steps]}
-        )
-        if response.status_code == 200:
-            return response.json()
-    except Exception as e:
-        st.error(f"Error fetching safety insights: {e}")
-    return None
 
 # Add this function to display safety insights
 def display_safety_insights(safety_data):
@@ -359,7 +377,7 @@ if source and destination:
                 st.session_state.route_map = create_map(route_data)
                 with st.container():
                     st.markdown('<div class="map-container">', unsafe_allow_html=True)
-                    folium_static(st.session_state.route_map, width=800, height=400)
+                    st_folium(st.session_state.route_map, width=800, height=400)
                 st.markdown('</div>', unsafe_allow_html=True)
                 
                 
@@ -378,26 +396,28 @@ if source and destination:
             if not st.session_state.is_trip_started:
                 if st.button("Start Trip", key="start_trip", type="primary"):
                     try:
+                        if not isinstance(st.session_state.token, dict) or "user_id" not in st.session_state.token:
+                            st.error("Authentication error. Please login again.")
+                            st.session_state.clear()
+                            switch_page("Login")
+                            st.stop()
+
                         start_location = route_data["origin"]
                         start_location["address"] = source
                         end_location = route_data["destination"]
                         end_location["address"] = destination
-                        print("Starting trip...", {
-                                "user_id": st.session_state["token"]["user_id"],
-                                "start_location": start_location,
-                                "end_location": end_location
-                            })
+
                         # Call backend to start trip
                         response = requests.post(
                             f"{BASE_URL}/commute/start-trip",
                             json={
-                                "user_id": st.session_state["token"]["user_id"],
+                                "user_id": st.session_state.token["user_id"],
                                 "start_location": start_location,
                                 "end_location": end_location,
                                 "distance": route_data["distance"],
                                 "duration": route_data["duration"]
                             },
-                            headers={"Authorization": f"Bearer {st.session_state['token']['access_token']}"}
+                            headers={"Authorization": f"Bearer {st.session_state.token['access_token']}"}
                         )
                         
                         if response.status_code == 200:
@@ -411,5 +431,8 @@ if source and destination:
                             st.error("❌ Failed to start trip. Please try again.")
                     except Exception as e:
                         st.error(f"Error starting trip: {e}")
+                        st.error("Please try logging in again.")
+                        st.session_state.clear()
+                        switch_page("Login")
         else:
             st.error("❌ Could not find route between these locations. Please try different locations.") 

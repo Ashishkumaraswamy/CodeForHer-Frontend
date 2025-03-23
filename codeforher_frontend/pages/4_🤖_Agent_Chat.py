@@ -40,12 +40,13 @@ async def main() -> None:
         page_title=APP_TITLE,
         page_icon=APP_ICON,
         menu_items={},
-        initial_sidebar_state="collapsed",
+        initial_sidebar_state="expanded",
     )
 
-    # Hide the streamlit upper-right chrome
-    st.html(
+    # Add Material Icons CDN
+    st.markdown(
         """
+        <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
         <style>
         [data-testid="stStatusWidget"] {
                 visibility: hidden;
@@ -57,8 +58,13 @@ async def main() -> None:
             align-items: center;
             gap: 10px;
         }
+        .material-icons {
+            vertical-align: middle;
+            margin-right: 4px;
+        }
         </style>
         """,
+        unsafe_allow_html=True,
     )
     if st.get_option("client.toolbarMode") != "minimal":
         st.set_option("client.toolbarMode", "minimal")
@@ -101,7 +107,7 @@ async def main() -> None:
     with st.sidebar:
         st.header(f"{APP_ICON} {APP_TITLE}")
 
-        with st.popover(":material/settings: Settings", use_container_width=True):
+        with st.popover("⚙️ Settings", use_container_width=True):
             model = "gpt-4o"
             agent_list = [a.key for a in agent_client.info.agents]
             agent_idx = agent_list.index(agent_client.info.default_agent)
@@ -112,8 +118,7 @@ async def main() -> None:
             )
             use_streaming = st.toggle("Stream results", value=True)
 
-        @st.dialog("Share/resume chat")
-        def share_chat_dialog() -> None:
+        with st.popover("📤 Share/resume chat", use_container_width=True):
             session = st.runtime.get_instance()._session_mgr.list_active_sessions()[0]
             st_base_url = urllib.parse.urlunparse(
                 [
@@ -131,9 +136,6 @@ async def main() -> None:
             chat_url = f"{st_base_url}?thread_id={st.session_state.thread_id}"
             st.markdown(f"**Chat URL:**\n```text\n{chat_url}\n```")
             st.info("Copy the above URL to share or revisit this chat")
-
-        if st.button(":material/upload: Share/resume chat", use_container_width=True):
-            share_chat_dialog()
 
     # Draw existing messages
     messages: list[ChatMessage] = st.session_state.messages
@@ -231,169 +233,175 @@ async def draw_messages(
             streaming_content += msg
             streaming_placeholder.write(streaming_content)
             continue
+
         if not isinstance(msg, ChatMessage):
             st.error(f"Unexpected message type: {type(msg)}")
             st.write(msg)
             st.stop()
 
-        match msg.type:
-            # A message from the user, the easiest case
-            case "human":
-                last_message_type = "human"
-                st.chat_message("human").write(msg.content)
+        # Handle different message types
+        if msg.type == "human":
+            last_message_type = "human"
+            st.chat_message("human").write(msg.content)
+        elif msg.type == "ai":
+            # If we're rendering new messages, store the message in session state
+            if is_new:
+                st.session_state.messages.append(msg)
 
-            # A message from the agent is the most complex case, since we need to
-            # handle streaming tokens and tool calls.
-            case "ai":
-                # If we're rendering new messages, store the message in session state
-                if is_new:
-                    st.session_state.messages.append(msg)
+            # If the last message type was not AI, create a new chat message
+            if last_message_type != "ai":
+                last_message_type = "ai"
+                st.session_state.last_message = st.chat_message("ai")
 
-                # If the last message type was not AI, create a new chat message
-                if last_message_type != "ai":
-                    last_message_type = "ai"
-                    st.session_state.last_message = st.chat_message("ai")
+            with st.session_state.last_message:
+                # If the message has content, write it out and add TTS button with speed control
+                # Reset the streaming variables to prepare for the next message.
+                if msg.content:
+                    if streaming_placeholder:
+                        streaming_placeholder.write(msg.content)
+                        streaming_content = ""
+                        streaming_placeholder = None
+                    else:
+                        st.write(msg.content)
 
-                with st.session_state.last_message:
-                    # If the message has content, write it out and add TTS button with speed control
-                    # Reset the streaming variables to prepare for the next message.
-                    if msg.content:
-                        if streaming_placeholder:
-                            streaming_placeholder.write(msg.content)
-                            streaming_content = ""
-                            streaming_placeholder = None
-                        else:
-                            st.write(msg.content)
-
-                        # Add text-to-speech button with speed control
-                        col1, col2 = st.columns([4, 1])
-                        with col1:
-                            if st.button(
-                                "🔊 Listen",
-                                key=f"tts_{msg.id if hasattr(msg, 'id') else id(msg)}",
-                            ):
-                                # Speed selector
-                                if "tts_speed" not in st.session_state:
-                                    st.session_state.tts_speed = 1.3
-                                audio_bytes = text_to_speech(
-                                    msg.content, st.session_state.tts_speed
-                                )
-                                if audio_bytes:
-                                    st.markdown(
-                                        get_audio_player(audio_bytes),
-                                        unsafe_allow_html=True,
-                                    )
-                        with col2:
+                    # Add text-to-speech button with speed control
+                    col1, col2 = st.columns([4, 1])
+                    with col1:
+                        if st.button(
+                            "🔊 Listen",
+                            key=f"tts_{msg.id if hasattr(msg, 'id') else id(msg)}",
+                        ):
                             # Speed selector
                             if "tts_speed" not in st.session_state:
-                                st.session_state.tts_speed = 1.5
-                            st.session_state.tts_speed = st.slider(
-                                "Speed",
-                                min_value=0.5,
-                                max_value=2.0,
-                                value=st.session_state.tts_speed,
-                                step=0.1,
-                                key=f"speed_{msg.id if hasattr(msg, 'id') else id(msg)}",
+                                st.session_state.tts_speed = 1.3
+                            audio_bytes = text_to_speech(
+                                msg.content, st.session_state.tts_speed
                             )
-
-                    if msg.tool_calls:
-                        # Create a status container for each tool call and store the
-                        # status container by ID to ensure results are mapped to the
-                        # correct status container.
-                        call_results = {}
-                        for tool_call in msg.tool_calls:
-                            status = st.status(
-                                f"""Tool Call: {tool_call["name"]}""",
-                                state="running" if is_new else "complete",
-                            )
-                            call_results[tool_call["id"]] = status
-                            status.write("Input:")
-                            status.write(tool_call["args"])
-
-                        # Expect one ToolMessage for each tool call.
-                        for _ in range(len(call_results)):
-                            tool_result: ChatMessage = await anext(messages_agen)
-
-                            if tool_result.type != "tool":
-                                st.error(
-                                    f"Unexpected ChatMessage type: {tool_result.type}"
+                            if audio_bytes:
+                                st.markdown(
+                                    get_audio_player(audio_bytes),
+                                    unsafe_allow_html=True,
                                 )
-                                st.write(tool_result)
-                                st.stop()
+                    with col2:
+                        # Speed selector
+                        if "tts_speed" not in st.session_state:
+                            st.session_state.tts_speed = 1.5
+                        st.session_state.tts_speed = st.slider(
+                            "Speed",
+                            min_value=0.5,
+                            max_value=2.0,
+                            value=st.session_state.tts_speed,
+                            step=0.1,
+                            key=f"speed_{msg.id if hasattr(msg, 'id') else id(msg)}",
+                        )
 
-                            # Record the message if it's new, and update the correct
-                            # status container with the result
-                            if is_new:
-                                st.session_state.messages.append(tool_result)
-                            if tool_result.tool_call_id:
-                                status = call_results[tool_result.tool_call_id]
-                            status.write("Output:")
-                            status.write(tool_result.content)
-                            status.update(state="complete")
+                if msg.tool_calls:
+                    # Create a status container for each tool call and store the
+                    # status container by ID to ensure results are mapped to the
+                    # correct status container.
+                    call_results = {}
+                    for tool_call in msg.tool_calls:
+                        status = st.status(
+                            f"""Tool Call: {tool_call["name"]}""",
+                            state="running" if is_new else "complete",
+                        )
+                        call_results[tool_call["id"]] = status
+                        status.write("Input:")
+                        status.write(tool_call["args"])
 
-            case "custom":
-                # CustomData example used by the bg-task-agent
-                # See:
-                # - src/agents/utils.py CustomData
-                # - src/agents/bg_task_agent/task.py
-                try:
-                    task_data: TaskData = TaskData.model_validate(msg.custom_data)
-                except ValidationError:
-                    st.error("Unexpected CustomData message received from agent")
-                    st.write(msg.custom_data)
-                    st.stop()
+                    # Expect one ToolMessage for each tool call.
+                    for _ in range(len(call_results)):
+                        tool_result: ChatMessage = await anext(messages_agen)
 
-                if is_new:
-                    st.session_state.messages.append(msg)
+                        if tool_result.type != "tool":
+                            st.error(
+                                f"Unexpected ChatMessage type: {tool_result.type}"
+                            )
+                            st.write(tool_result)
+                            st.stop()
 
-                if last_message_type != "task":
-                    last_message_type = "task"
-                    st.session_state.last_message = st.chat_message(
-                        name="task", avatar=":material/manufacturing:"
-                    )
-                    with st.session_state.last_message:
-                        status = TaskDataStatus()
-
-                status.add_and_draw_task_data(task_data)
-
-            # In case of an unexpected message type, log an error and stop
-            case _:
-                st.error(f"Unexpected ChatMessage type: {msg.type}")
-                st.write(msg)
+                        # Record the message if it's new, and update the correct
+                        # status container with the result
+                        if is_new:
+                            st.session_state.messages.append(tool_result)
+                        if tool_result.tool_call_id:
+                            status = call_results[tool_result.tool_call_id]
+                        status.write("Output:")
+                        status.write(tool_result.content)
+                        status.update(state="complete")
+        elif msg.type == "custom":
+            # CustomData example used by the bg-task-agent
+            # See:
+            # - src/agents/utils.py CustomData
+            # - src/agents/bg_task_agent/task.py
+            try:
+                task_data: TaskData = TaskData.model_validate(msg.custom_data)
+            except ValidationError:
+                st.error("Unexpected CustomData message received from agent")
+                st.write(msg.custom_data)
                 st.stop()
+
+            if is_new:
+                st.session_state.messages.append(msg)
+
+            if last_message_type != "task":
+                last_message_type = "task"
+                st.session_state.last_message = st.chat_message(
+                    name="task", avatar=":material/manufacturing:"
+                )
+                with st.session_state.last_message:
+                    status = TaskDataStatus()
+
+            status.add_and_draw_task_data(task_data)
+        else:
+            st.error(f"Unexpected ChatMessage type: {msg.type}")
+            st.write(msg)
+            st.stop()
 
 
 async def handle_feedback() -> None:
     """Draws a feedback widget and records feedback from the user."""
-
     # Keep track of last feedback sent to avoid sending duplicates
     if "last_feedback" not in st.session_state:
         st.session_state.last_feedback = (None, None)
 
     latest_run_id = st.session_state.messages[-1].run_id
-    feedback = st.feedback("stars", key=latest_run_id)
-
-    # If the feedback value or run ID has changed, send a new feedback record
-    if (
-        feedback is not None
-        and (latest_run_id, feedback) != st.session_state.last_feedback
-    ):
-        # Normalize the feedback value (an index) to a score between 0 and 1
-        normalized_score = (feedback + 1) / 5.0
-
-        agent_client: AgentClient = st.session_state.agent_client
-        try:
-            await agent_client.acreate_feedback(
-                run_id=latest_run_id,
-                key="human-feedback-stars",
-                score=normalized_score,
-                kwargs={"comment": "In-line human feedback"},
-            )
-        except AgentClientError as e:
-            st.error(f"Error recording feedback: {e}")
-            st.stop()
-        st.session_state.last_feedback = (latest_run_id, feedback)
-        st.toast("Feedback recorded", icon=":material/reviews:")
+    
+    # Create feedback buttons
+    col1, col2 = st.columns([1, 5])
+    with col1:
+        if st.button("👍", key=f"thumbs_up_{latest_run_id}"):
+            normalized_score = 1.0
+            agent_client: AgentClient = st.session_state.agent_client
+            try:
+                await agent_client.acreate_feedback(
+                    run_id=latest_run_id,
+                    key="human-feedback-stars",
+                    score=normalized_score,
+                    kwargs={"comment": "Positive feedback"},
+                )
+                st.session_state.last_feedback = (latest_run_id, normalized_score)
+                st.toast("Feedback recorded", icon="👍")
+            except AgentClientError as e:
+                st.error(f"Error recording feedback: {e}")
+                st.stop()
+    
+    with col2:
+        if st.button("👎", key=f"thumbs_down_{latest_run_id}"):
+            normalized_score = 0.0
+            agent_client: AgentClient = st.session_state.agent_client
+            try:
+                await agent_client.acreate_feedback(
+                    run_id=latest_run_id,
+                    key="human-feedback-stars",
+                    score=normalized_score,
+                    kwargs={"comment": "Negative feedback"},
+                )
+                st.session_state.last_feedback = (latest_run_id, normalized_score)
+                st.toast("Feedback recorded", icon="👎")
+            except AgentClientError as e:
+                st.error(f"Error recording feedback: {e}")
+                st.stop()
 
 
 if __name__ == "__main__":

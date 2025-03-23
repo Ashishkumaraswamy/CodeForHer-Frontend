@@ -4,16 +4,19 @@ from datetime import datetime
 import pytz
 from streamlit_extras.switch_page_button import switch_page
 import folium
-from streamlit_folium import folium_static
+from streamlit_folium import st_folium
+import time
+import polyline
 
 # Base URL of your FastAPI backend
 BASE_URL = "http://localhost:8080/api"
 
 # Page config
 st.set_page_config(
-    page_title="Trip History - Women Commute Safety",
+    page_title="Trip History",
+    page_icon="🗓️",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
 # Custom CSS
@@ -108,6 +111,14 @@ if "token" not in st.session_state:
     switch_page("Login")
     st.stop()
 
+# Initialize session state for filters
+if "status_filter" not in st.session_state:
+    st.session_state.status_filter = "All"
+if "sort_by" not in st.session_state:
+    st.session_state.sort_by = "Latest First"
+if "search_location" not in st.session_state:
+    st.session_state.search_location = ""
+
 def fetch_trips():
     """Fetch all trips for the current user."""
     try:
@@ -169,45 +180,48 @@ with col1:
     status_filter = st.selectbox(
         "Filter by Status",
         ["All", "Completed", "Ongoing", "Cancelled"],
-        key="status_filter"
+        key="trip_history_status_filter"
     )
+    st.session_state.status_filter = status_filter
 with col2:
     sort_by = st.selectbox(
         "Sort by",
         ["Latest First", "Oldest First", "Longest Distance", "Shortest Distance"],
-        key="sort_by"
+        key="trip_history_sort_by"
     )
+    st.session_state.sort_by = sort_by
 with col3:
-    search = st.text_input("Search by location", key="search_location")
+    search = st.text_input("Search by location", key="trip_history_search")
+    st.session_state.search_location = search
 st.markdown('</div>', unsafe_allow_html=True)
 
 # Fetch trips
 trips = fetch_trips()
 
 # Apply filters
-if status_filter != "All":
-    trips = [t for t in trips if t["status"].lower() == status_filter.lower()]
+if st.session_state.status_filter != "All":
+    trips = [t for t in trips if t["status"].lower() == st.session_state.status_filter.lower()]
 
-if search:
+if st.session_state.search_location:
     trips = [t for t in trips if 
-            search.lower() in t["start_location"]["address"].lower() or 
-            search.lower() in t["end_location"]["address"].lower()]
+            st.session_state.search_location.lower() in t["start_location"]["address"].lower() or 
+            st.session_state.search_location.lower() in t["end_location"]["address"].lower()]
 
 # Apply sorting
-if sort_by == "Latest First":
+if st.session_state.sort_by == "Latest First":
     trips.sort(key=lambda x: x["created_at"], reverse=True)
-elif sort_by == "Oldest First":
+elif st.session_state.sort_by == "Oldest First":
     trips.sort(key=lambda x: x["created_at"])
-elif sort_by == "Longest Distance":
+elif st.session_state.sort_by == "Longest Distance":
     trips.sort(key=lambda x: x.get("distance", 0), reverse=True)
-elif sort_by == "Shortest Distance":
+elif st.session_state.sort_by == "Shortest Distance":
     trips.sort(key=lambda x: x.get("distance", 0))
 
 # Display trips
 if not trips:
     st.info("No trips found.")
 else:
-    for trip in trips:
+    for idx, trip in enumerate(trips):
         st.markdown('<div class="trip-card">', unsafe_allow_html=True)
         
         # Trip Header
@@ -278,7 +292,7 @@ else:
             trip["end_location"],
             trip.get("route", None)
         )
-        folium_static(trip_map, width=None, height=200)
+        st_folium(trip_map, width=None, height=200, key=f"map_{idx}")
         st.markdown('</div>', unsafe_allow_html=True)
         
         # Alerts

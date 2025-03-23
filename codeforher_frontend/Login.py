@@ -22,12 +22,20 @@ st.markdown("""
         background-color: #FF4B4B;
         color: white;
         border: none;
-        padding: 10px 20px;
-        border-radius: 5px;
+        padding: 12px 24px;
+        border-radius: 8px;
         font-weight: bold;
+        font-size: 1.1rem;
+        transition: all 0.3s ease;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
     }
     .stButton>button:hover {
         background-color: #FF6B6B;
+        transform: translateY(-2px);
+        box-shadow: 0 6px 8px rgba(0, 0, 0, 0.2);
+    }
+    .stButton>button:active {
+        transform: translateY(0);
     }
     .stTabs [data-baseweb="tab-list"] {
         gap: 2rem;
@@ -56,14 +64,30 @@ st.markdown("""
     .stTextArea>div>div>textarea {
         border-radius: 5px;
     }
+    .error-message {
+        background-color: #FFE5E5;
+        border-left: 4px solid #FF4B4B;
+        padding: 10px;
+        margin: 10px 0;
+        border-radius: 4px;
+        color: #D32F2F;
+    }
+    .success-message {
+        background-color: #E8F5E9;
+        border-left: 4px solid #4CAF50;
+        padding: 10px;
+        margin: 10px 0;
+        border-radius: 4px;
+        color: #2E7D32;
+    }
     </style>
 """, unsafe_allow_html=True)
 
 # Display header with logo
 col1, col2, col3 = st.columns([1, 2, 1])
 with col2:
-    st.image("./static/images/logo.jpeg", width=200)
-    st.title("Women Commute Safety 🚦")
+    st.image("codeforher_frontend/static/images/logo.jpeg", width=200)
+    st.title("Guardian Lane 🚦")
     st.markdown("### Welcome! Please login or signup to continue")
 
 # Create tabs for Login and Signup with more spacing
@@ -77,22 +101,51 @@ with tab1:
     login_password = st.text_input("Password", type="password", placeholder="Enter your password", key="login_password")
 
     if st.button("Login", key="login_button"):
-        if login_email and login_password:
+        if not login_email or not login_password:
+            st.markdown(
+                '<div class="error-message">⚠️ Please enter both email and password</div>',
+                unsafe_allow_html=True
+            )
+        else:
             try:
                 response = requests.post(
                     f"{BASE_URL}/auth/login",
                     json={"email": login_email, "password": login_password}
                 )
+                
                 if response.status_code == 200:
-                    st.success("✅ Login successful!")
+                    st.markdown(
+                        '<div class="success-message">✅ Login successful!</div>',
+                        unsafe_allow_html=True
+                    )
                     st.session_state["token"] = response.json()
                     switch_page("Trip_Planner")
+                elif response.status_code == 401:
+                    st.markdown(
+                        '<div class="error-message">❌ Invalid email or password. Please check your credentials.</div>',
+                        unsafe_allow_html=True
+                    )
+                elif response.status_code == 404:
+                    st.markdown(
+                        '<div class="error-message">❌ Account not found. Please sign up first.</div>',
+                        unsafe_allow_html=True
+                    )
                 else:
-                    st.error("❌ Invalid credentials. Please try again.")
+                    error_detail = response.json().get("detail", "Unknown error occurred")
+                    st.markdown(
+                        f'<div class="error-message">❌ Login failed: {error_detail}</div>',
+                        unsafe_allow_html=True
+                    )
+            except requests.exceptions.ConnectionError:
+                st.markdown(
+                    '<div class="error-message">❌ Unable to connect to server. Please check your internet connection.</div>',
+                    unsafe_allow_html=True
+                )
             except Exception as e:
-                st.error(f"Error connecting to server: {e}")
-        else:
-            st.warning("⚠️ Please fill in all fields")
+                st.markdown(
+                    f'<div class="error-message">❌ An unexpected error occurred: {str(e)}</div>',
+                    unsafe_allow_html=True
+                )
 
 # ----------- SIGNUP SECTION -----------
 with tab2:
@@ -139,7 +192,39 @@ with tab2:
         voice_assist = st.checkbox("Enable Voice Assist", value=True)
 
     if st.button("Signup", key="signup_button"):
-        if name and email and phone and password and home_address and emergency_contacts:
+        # Check each required field individually
+        missing_fields = []
+        
+        if not name:
+            missing_fields.append("Full Name")
+        if not email:
+            missing_fields.append("Email")
+        if not phone:
+            missing_fields.append("Phone")
+        if not password:
+            missing_fields.append("Password")
+        if not home_address:
+            missing_fields.append("Home Address")
+            
+        # Check emergency contacts
+        if not emergency_contacts:
+            missing_fields.append("At least one Emergency Contact")
+        else:
+            for i, contact in enumerate(emergency_contacts):
+                if not contact.get("name"):
+                    missing_fields.append(f"Emergency Contact {i+1} Name")
+                if not contact.get("phone"):
+                    missing_fields.append(f"Emergency Contact {i+1} Phone")
+                if not contact.get("relationship"):
+                    missing_fields.append(f"Emergency Contact {i+1} Relationship")
+
+        if missing_fields:
+            st.markdown(
+                f'<div class="error-message">⚠️ Please fill in the following required fields:<br>' + 
+                '<br>'.join(f"- {field}" for field in missing_fields) + '</div>',
+                unsafe_allow_html=True
+            )
+        else:
             signup_data = {
                 "name": name,
                 "email": email,
@@ -160,11 +245,24 @@ with tab2:
             try:
                 response = requests.post(f"{BASE_URL}/auth/signup", json=signup_data)
                 if response.status_code == 200:
-                    st.success("✅ Signup successful! You can now login.")
+                    st.markdown(
+                        '<div class="success-message">✅ Signup successful! You can now login.</div>',
+                        unsafe_allow_html=True
+                    )
                     st.session_state["show_login"] = True
                 else:
-                    st.error("❌ Signup failed. Please try again.")
+                    error_message = response.json().get("detail", "Unknown error occurred")
+                    st.markdown(
+                        f'<div class="error-message">❌ Signup failed: {error_message}</div>',
+                        unsafe_allow_html=True
+                    )
+            except requests.exceptions.ConnectionError:
+                st.markdown(
+                    '<div class="error-message">❌ Unable to connect to server. Please check your internet connection.</div>',
+                    unsafe_allow_html=True
+                )
             except Exception as e:
-                st.error(f"Error connecting to server: {e}")
-        else:
-            st.warning("⚠️ Please fill in all required fields")
+                st.markdown(
+                    f'<div class="error-message">❌ An unexpected error occurred: {str(e)}</div>',
+                    unsafe_allow_html=True
+                )
